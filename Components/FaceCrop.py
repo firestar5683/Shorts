@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 from moviepy.editor import *
 from Components.Speaker import detect_faces_and_speakers, Frames
+import gc
+from collections import deque
+
 global Fps
 
 def crop_to_vertical(input_video_path, output_video_path):
@@ -20,104 +23,93 @@ def crop_to_vertical(input_video_path, output_video_path):
 
     vertical_height = int(original_height)
     vertical_width = int(vertical_height * 9 / 16)
-    print(vertical_height, vertical_width)
-
+    print(f"Dimensions for vertical crop: {vertical_height} x {vertical_width}")
 
     if original_width < vertical_width:
         print("Error: Original video width is less than the desired vertical width.")
+        cap.release()
         return
 
     x_start = (original_width - vertical_width) // 2
     x_end = x_start + vertical_width
-    print(f"start and end - {x_start} , {x_end}")
-    print(x_end-x_start)
     half_width = vertical_width // 2
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (vertical_width, vertical_height))
     global Fps
     Fps = fps
-    print(fps)
-    count = 0
+
+    frame_count = 0  # Track frames written to output
+
+    # Stabilization setup
+    stabilized_centerX = original_width // 2
+    stabilization_factor = 0.1  # Lower factor for smoother following
+    previous_faces = deque(maxlen=10)  # Larger rolling average for stability
+    min_center_deviation = 20  # Minimum deviation threshold for filtering inconsistent detections
+
     for _ in range(total_frames):
         ret, frame = cap.read()
         if not ret:
             print("Error: Could not read frame.")
             break
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        if len(faces) >-1:
-            if len(faces) == 0:
-                (x, y, w, h) = Frames[count]
-
-            # (x, y, w, h) = faces[0]  
-            try:
-                #check if face 1 is active
-                (X, Y, W, H) = Frames[count]
-            except Exception as e:
-                print(e)
-                (X, Y, W, H) = Frames[count][0]
-                print(Frames[count][0])
-            
-            for f in faces:
-                x1, y1, w1, h1 = f
-                center = x1+ w1//2
-                if center > X and center < X+W:
-                    x = x1
-                    y = y1
-                    w = w1
-                    h = h1
-                    break
-
-            # print(faces[0])
-            centerX = x+(w//2)
-            print(centerX)
-            print(x_start - (centerX - half_width))
-            if count == 0 or (x_start - (centerX - half_width)) <1 :
-                ## IF dif from prev fram is low then no movement is done
-                pass #use prev vals
-            else:
-                x_start = centerX - half_width
-                x_end = centerX + half_width
-
-
-                if int(cropped_frame.shape[1]) != x_end- x_start:
-                    if x_end < original_width:
-                        x_end += int(cropped_frame.shape[1]) - (x_end-x_start)
-                        if x_end > original_width:
-                            x_start -= int(cropped_frame.shape[1]) - (x_end-x_start)
-                    else:
-                        x_start -= int(cropped_frame.shape[1]) - (x_end-x_start)
-                        if x_start < 0:
-                            x_end += int(cropped_frame.shape[1]) - (x_end-x_start)
-                    print("Frame size inconsistant")
-                    print(x_end- x_start)
-
-        count += 1
-        cropped_frame = frame[:, x_start:x_end]
-        if cropped_frame.shape[1] == 0:
-            x_start = (original_width - vertical_width) // 2
-            x_end = x_start + vertical_width
-            cropped_frame = frame[:, x_start:x_end]
         
-        print(cropped_frame.shape)
+        # Filter to keep only the largest detected face
+        if len(faces) > 0:
+            largest_face = max(faces, key=lambda f: f[2] * f[3])  # Select face based on area (w * h)
+            x, y, w, h = largest_face
+            current_centerX = x + (w // 2)
+            
+            # Filter inconsistent detections
+            if abs(current_centerX - stabilized_centerX) < min_center_deviation:
+                previous_faces.append(current_centerX)
+            elif len(previous_faces) > 0:
+                # Use the average of previous faces if current detection is inconsistent
+                current_centerX = int(np.mean(previous_faces))
+        elif previous_faces:
+            # Use rolling average if no face detected
+            current_centerX = int(np.mean(previous_faces))
+        else:
+            # Default to center if no face and no history
+            current_centerX = original_width // 2
+
+        # Apply stabilization using exponential moving average
+        stabilized_centerX = int(stabilized_centerX * (1 - stabilization_factor) + current_centerX * stabilization_factor)
+
+        # Calculate x_start and x_end based on stabilized centerX
+        x_start = max(0, stabilized_centerX - half_width)
+        x_end = min(original_width, stabilized_centerX + half_width)
+
+        # Crop frame and ensure dimensions match the expected output size
+        cropped_frame = frame[:, x_start:x_end]
+
+        # Resize cropped_frame to ensure consistent dimensions
+        if cropped_frame.shape[1] != vertical_width or cropped_frame.shape[0] != vertical_height:
+            cropped_frame = cv2.resize(cropped_frame, (vertical_width, vertical_height))
+            print(f"Resizing frame to maintain {vertical_width}x{vertical_height}")
+
+        # Ensure non-empty cropped frame before writing
+        if cropped_frame.size == 0:
+            print("Warning: Empty cropped frame, skipping frame")
+            continue
 
         out.write(cropped_frame)
+        frame_count += 1  # Increment frame count
 
+    print(f"Frames written to output: {frame_count}/{total_frames}")
     cap.release()
     out.release()
-    print("Cropping complete. The video has been saved to", output_video_path, count)
-
-
+    print("Cropping complete. The video has been saved to", output_video_path)
+    gc.collect()
 
 def combine_videos(video_with_audio, video_without_audio, output_filename):
     try:
-        # Load video clips
         clip_with_audio = VideoFileClip(video_with_audio)
         clip_without_audio = VideoFileClip(video_without_audio)
 
         audio = clip_with_audio.audio
-
         combined_clip = clip_without_audio.set_audio(audio)
 
         global Fps
@@ -126,16 +118,18 @@ def combine_videos(video_with_audio, video_without_audio, output_filename):
     
     except Exception as e:
         print(f"Error combining video and audio: {str(e)}")
-
-
+    
+    finally:
+        clip_with_audio.close()
+        clip_without_audio.close()
+        combined_clip.close()
+        del clip_with_audio, clip_without_audio, combined_clip
+        gc.collect()
 
 if __name__ == "__main__":
     input_video_path = r'Out.mp4'
-    output_video_path = 'Croped_output_video.mp4'
+    output_video_path = '_output_video.mp4'
     final_video_path = 'final_video_with_audio.mp4'
     detect_faces_and_speakers(input_video_path, "DecOut.mp4")
     crop_to_vertical(input_video_path, output_video_path)
     combine_videos(input_video_path, output_video_path, final_video_path)
-
-
-

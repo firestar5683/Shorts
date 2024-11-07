@@ -27,10 +27,10 @@ if Vid:
                 Output = "Out.mp4"
 
                 crop_video(Vid, Output, start, stop)
-                croped = "croped.mp4"
+                cropped = "cropped.mp4"
 
-                crop_to_vertical("Out.mp4", croped)
-                combine_videos("Out.mp4", croped, "Final.mp4")
+                crop_to_vertical("Out.mp4", cropped)
+                combine_videos("Out.mp4", cropped, "Final.mp4")
             else:
                 print("Error in getting highlight")
         else:

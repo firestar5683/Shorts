@@ -1,78 +1,91 @@
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+import json
+
 load_dotenv()
 
 client = OpenAI(
-    api_key=os.getenv('OPENAI_API'), # Replace with your OpenAI API key
+    api_key=os.getenv('OPENAI_API')  # Ensure this is set up in your .env file
 )
 
-
-import json
-
 def extract_times(json_string):
-      try:
-        # Parse the JSON string
+    """Extracts start and end times from JSON and converts them to integers."""
+    try:
         data = json.loads(json_string)
+        start_time = int(float(data[0]["start"]))
+        end_time = int(float(data[0]["end"]))
+        return start_time, end_time
+    except Exception as e:
+        print("Error parsing JSON:", e)
+        return 0, 0
+
+def parse_highlight_response(response_text):
+    """Parses and validates JSON from the model's response."""
+    try:
+        # Locate JSON content by finding the brackets
+        start_index = response_text.find("[")
+        end_index = response_text.rfind("]") + 1
+        json_str = response_text[start_index:end_index]
+
+        # Parse JSON
+        highlights = json.loads(json_str)
         
-        # Extract start and end times as floats
-        start_time = float(data[0]["start"])
-        end_time = float(data[0]["end"])
-        
-        # Convert to integers
-        start_time_int = int(start_time)
-        end_time_int = int(end_time)
-        return start_time_int, end_time_int
-      except Exception as e:
-        return 0,0
+        # Check JSON structure
+        if (
+            isinstance(highlights, list) and
+            len(highlights) == 1 and
+            "start" in highlights[0] and
+            "end" in highlights[0] and
+            "content" in highlights[0]
+        ):
+            return highlights
+        else:
+            print("Error: Parsed JSON structure is incorrect.")
+            return None
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}")
+        return None
 
+system = '''
+Based on the transcription provided by the user, generate a highlight that is around 1 minute long. This highlight should be directly suitable for a short and should capture interesting parts. Please provide timestamps for the clip start and end, ensuring the highlight is a continuous part of the video.
 
-system  = '''
+Format response **strictly as JSON** without any extra text or explanation. Use this exact format:
 
-Baised on the Transcription user provides with start and end, Highilight the main parts in less then 1 min which can be directly converted into a short. highlight it such that its intresting and also keep the time staps for the clip to start and end. only select a continues Part of the video
+[
+    {
+        "start": "Start time of the clip in seconds",
+        "content": "Highlight text capturing main points",
+        "end": "End time of the clip in seconds"
+    }
+]
 
-Follow this Format and return in valid json 
-[{
-start: "Start time of the clip",
-content: "Highlight Text",
-end: "End Time for the highlighted clip"
-}]
-it should be one continues clip as it will then be cut from the video and uploaded as a tiktok video. so only have one start, end and content
-
-Dont say anything else, just return Proper Json. no explanation etc
-
-
-IF YOU DONT HAVE ONE start AND end WHICH IS FOR THE LENGTH OF THE ENTIRE HIGHLIGHT, THEN 10 KITTENS WILL DIE, I WILL DO JSON['start'] AND IF IT DOESNT WORK THEN...
+Only one start, end, and content should be returned as JSON. Do not add any other text or explanation.
 '''
 
-User = '''
-Any Example
-'''
+def GetHighlight(transcription):
+    """Fetches highlight from transcription and validates JSON output."""
+    print("Getting Highlight from Transcription")
+    response = client.chat.completions.create(
+        model="gpt-4",  # Replace with the model you have access to
+        temperature=0.7,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": transcription}
+        ]
+    )
 
-
-
-def GetHighlight(Transcription):
-  print("Getting Highlight from Transcription ") 
-  response = client.chat.completions.create(
-    model="gpt-4o-2024-05-13",
-    temperature=0.7,
-    messages=[
-      {"role": "system", "content": system},
-      {"role": "user", "content": Transcription + system}
-    ]
-  )
-
-  json_string = response.choices[0].message.content
-  json_string = json_string.replace("json", "")
-  json_string = json_string.replace("```", "")
-  # print(json_string)
-  Start , End = extract_times(json_string)
-  if Start == End:
-    Ask = input("Error - Get Highlights again (y/n) -> ").lower()
-    if Ask == 'y':
-      Start , End = GetHighlight(Transcription)
-  return Start, End
-
+    response_text = response.choices[0].message.content  # Access content directly
+    highlight_data = parse_highlight_response(response_text)
+    
+    if highlight_data:
+        start, end = extract_times(response_text)
+        return start, end
+    else:
+        print("Error in getting highlight: invalid JSON format")
+        return 0, 0
 
 if __name__ == "__main__":
-  print(GetHighlight(User))
+    transcription_text = "Your transcription here"
+    start, end = GetHighlight(transcription_text)
+    print(f"Highlight start: {start}, end: {end}")
